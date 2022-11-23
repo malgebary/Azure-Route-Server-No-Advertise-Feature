@@ -104,8 +104,7 @@ neighbor 10.1.0.4 remote-as 65515
 neighbor 10.1.0.4 ebgp-multihop 255
 neighbor 10.1.0.5 remote-as 65515
 neighbor 10.1.0.5 ebgp-multihop 255
-
-	 !
+!
 address-family ipv4
 network 0.0.0.0/0
 neighbor 10.1.0.4 activate
@@ -113,7 +112,7 @@ neighbor 10.1.0.5 activate
 neighbor 10.1.0.4 route-map lbnexthop out
 neighbor 10.1.0.5 route-map lbnexthop out
 exit-address-family
-	!
+!
 route-map lbnexthop permit 10
 
 set ip next-hop 10.1.1.254
