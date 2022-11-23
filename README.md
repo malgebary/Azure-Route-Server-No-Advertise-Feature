@@ -23,7 +23,10 @@ In this Lab you will creat the following components:
 ![image](https://user-images.githubusercontent.com/78562461/203482792-8b22d70e-57b9-4ae7-b8c0-83f718678528.png)
 
 ## Lab
+
 #Paramaters
+
+```
 loc=SouthCentralUS
 rg=Nexthop
 username=azureuser
