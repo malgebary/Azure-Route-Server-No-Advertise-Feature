@@ -135,9 +135,106 @@ neighbor 10.1.0.4 ebgp-multihop 255
 neighbor 10.1.0.5 remote-as 65515
 neighbor 10.1.0.5 ebgp-multihop 255
 
-	 !
+!
 address-family ipv4
 neighbor 10.1.0.4 activate
 neighbor 10.1.0.5 activate
 exit-address-family
-	!
+!
+add static route to ARS subnet that point to the default gateway of the CSR Internal subnet to avoid recursive routing failure for ARS BGP endpoints learned via BGP
+ip route 10.1.0.0 255.255.255.0 10.1.1.1
+
+# Add Virtual Network Gateway to the HUb VNet:
+
+To allow route transit between ARS and virtual network gateway, the latter need to be in active-active mode.
+
+az network public-ip create --name HUB-VNG-PIP1 --resource-group $rg --allocation-method Dynamic --location $loc
+az network public-ip create --name HUB-VNG-PIP2 --resource-group $rg --allocation-method Dynamic --location $loc
+az network vnet-gateway create --name HUB-VNG --public-ip-address HUB-VNG-PIP1 HUB-VNG-PIP2 --resource-group $rg --vnet HUB --gateway-type Vpn --vpn-type RouteBased --sku VpnGw1 --asn 65515  --location $loc --bgp-peering-address 10.1.3.4 10.1.3.5
+
+
+# Create On-Prem VNet:
+
+az network vnet create --resource-group $rg --name On-PremVNet --location $loc --address-prefixes 192.168.0.0/16 --subnet-name External --subnet-prefix 192.168.0.0/24 
+az network vnet subnet create --address-prefix 192.168.1.0/24 --name Internal --resource-group $rg --vnet-name On-PremVNet
+
+# Configure On-prem CSR:
+
+az network public-ip create --name OnPremCSRPublicIP -g $rg --idle-timeout 30 --allocation-method Static --location $loc
+az network nic create --name OnPremCSROutsideInterface -g $rg --subnet External --vnet On-PremVNet --public-ip-address OnPremCSRPublicIP --ip-forwarding true --private-ip-address 192.168.0.4 --location $loc
+az network nic create --name OnPremCSRInsideInterface -g $rg --subnet Internal --vnet On-PremVNet --ip-forwarding true --private-ip-address 192.168.1.4 --location $loc
+
+az vm create -g $rg --location $loc --name On-PremCSR --size Standard_DS3_v2 --nics OnPremCSROutsideInterface OnPremCSRInsideInterface --image cisco:cisco-csr-1000v:17_2_1-byol:17.2.120200508 --admin-username $username --admin-password $password
+
+# After the HUB-VNG gateway and On-PremCSR have been created, document the public IP address for both, we will use them to build the IPsec tunnel
+
+az network public-ip show -g $rg -n HUB-VNG-PIP1 --query "{address: ipAddress}"
+az network public-ip show -g $rg -n OnPremCSRPublicIP --query "{address: ipAddress}"
+
+
+#Login to on OnPremCSR, we will need to get into the configuration mode to configure IPsec and BGP, so type (conf t):
+
+onpremCSR#conf t
+
+Now you in configuration mode:
+
+onpremCSR(config)#
+
+Paste in below configuration one block at a time, make sure to replace CSRPublicIP and Azure-VNGpubip with ips you got from earlier:
+
+
+crypto ikev2 proposal Azure-Ikev2-Proposal
+ encryption aes-cbc-256
+ integrity sha1 sha256
+ group 2
+!
+crypto ikev2 policy Azure-Ikev2-Policy
+ match address local 192.168.0.4 
+ proposal Azure-Ikev2-Proposal
+!
+crypto ikev2 keyring to-onprem-keyring
+ peer Azure-VNGpubip
+  address HUB-VNG-PIP1
+  pre-shared-key Routeserver
+!
+crypto ikev2 profile Azure-Ikev2-Profile
+ match address local 192.168.0.4 
+ match identity remote address HUB-VNG-PIP1 255.255.255.255
+ authentication remote pre-share
+ authentication local pre-share
+ keyring local to-onprem-keyring
+ lifetime 28800
+ dpd 10 5 on-demand
+!
+crypto ipsec transform-set to-Azure-TransformSet esp-gcm 256
+ mode tunnel
+!
+crypto ipsec profile to-Azure-IPsecProfile
+ set transform-set to-Azure-TransformSet
+ set ikev2-profile Azure-Ikev2-Profile
+!
+interface Loopback11
+ ip address 172.16.1.1 255.255.255.255
+!
+interface Tunnel11
+ ip address 172.16.2.1 255.255.255.255
+ ip tcp adjust-mss 1350
+ tunnel source 192.168.0.4
+ tunnel mode ipsec ipv4
+ tunnel destination HUB-VNG-PIP1
+ tunnel protection ipsec profile to-Azure-IPsecProfile
+!
+router bgp 65005
+ bgp log-neighbor-changes
+ neighbor 10.1.3.4 remote-as 65515
+ neighbor 10.1.3.4 ebgp-multihop 255
+ neighbor 10.1.3.4 update-source Loopback11
+ !
+ address-family ipv4
+  network 192.168.0.0 mask 255.255.0.0
+  neighbor 10.1.3.4 activate
+ exit-address-family
+!
+!Static route to HUB-VNG BGP ip pointing to Tunnel11, so that it would be reachable
+ip route 10.1.3.4 255.255.255.255 Tunnel11
+
